@@ -797,7 +797,7 @@ struct CSphWordforms
 	~CSphWordforms ();
 
 	bool						IsEqual ( const CSphVector<CSphSavedFile> & dFiles );
-	bool						ToNormalForm ( BYTE * pWord, bool bBefore ) const;
+	bool						ToNormalForm ( BYTE * pWord, bool bBefore, bool bOnlyCheck ) const;
 };
 
 
@@ -3380,6 +3380,8 @@ public:
 	virtual bool				ReplaceKillList ( const SphDocID_t *, int ) { return true; }
 
 	virtual void				SetMemorySettings ( bool bMlock, bool bOndiskAttrs, bool bOndiskPool ) = 0;
+
+	virtual void				GetFieldFilterSettings ( CSphFieldFilterSettings & tSettings );
 
 public:
 	int64_t						m_iTID;					///< last committed transaction id

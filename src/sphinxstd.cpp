@@ -1109,22 +1109,6 @@ CSphMutex::~CSphMutex ()
 		sphDie ( "CloseHandle() failed" );
 }
 
-CSphMutex::CSphMutex (CSphMutex&& rhs)
-	: m_hMutex { rhs.m_hMutex }
-{
-	rhs.m_hMutex = NULL;
-}
-
-CSphMutex& CSphMutex::operator= (CSphMutex&& rhs)
-{
-	if ( &rhs!=this )
-	{
-		m_hMutex = std::move(rhs.m_hMutex);
-		rhs.m_hMutex = NULL;
-	}
-	return *this;
-}
-
 bool CSphMutex::Lock ()
 {
 	DWORD uWait = WaitForSingleObject ( m_hMutex, INFINITE );
@@ -1186,7 +1170,7 @@ CSphSemaphore::~CSphSemaphore ()
 	assert ( !m_bInitialized );
 }
 
-bool CSphSemaphore::Init(const char*)
+bool CSphSemaphore::Init ( const char * )
 {
 	assert ( !m_bInitialized );
 	m_hSem = CreateSemaphore ( NULL, 0, INT_MAX, NULL );
@@ -1227,31 +1211,12 @@ CSphMutex::CSphMutex()
 		sphDie ( "pthread_mutex_init() failed %s", strerror ( errno ) );
 }
 
-CSphMutex::~CSphMutex() {
+CSphMutex::~CSphMutex()
+{
 	if ( pthread_mutex_destroy ( m_pMutex ) )
 		sphDie ( "pthread_mutex_destroy() failed %s", strerror ( errno ) );
-	SafeDelete(m_pMutex);
+	SafeDelete ( m_pMutex );
 }
-
-CSphMutex::CSphMutex(CSphMutex&& rhs)
-	: m_pMutex { std::move (rhs.m_pMutex)}
-{
-	rhs.m_pMutex = nullptr;
-}
-
-CSphMutex& CSphMutex::operator= ( CSphMutex &&rhs )
-{
-	if (&rhs!=this)
-	{
-		if ( m_pMutex && pthread_mutex_destroy ( m_pMutex ) )
-			sphDie ( "pthread_mutex_destroy() failed %s", strerror ( errno ) );
-		SafeDelete ( m_pMutex );
-		m_pMutex = std::move(rhs.m_pMutex);
-		rhs.m_pMutex = nullptr;
-	}
-	return *this;
-}
-
 
 bool CSphMutex::Lock ()
 {
@@ -1260,7 +1225,6 @@ bool CSphMutex::Lock ()
 
 bool CSphMutex::TimedLock ( int iMsec )
 {
-
 // pthread_mutex_timedlock is not available on Mac Os. Fallback to lock without a timer.
 #if defined (HAVE_PTHREAD_MUTEX_TIMEDLOCK)
 	struct timespec ts;
@@ -1352,10 +1316,10 @@ CSphSemaphore::~CSphSemaphore ()
 }
 
 
-bool CSphSemaphore::Init (const char* sName)
+bool CSphSemaphore::Init ( const char * sName )
 {
 	assert ( !m_bInitialized );
-	m_pSem = sem_open (sName, O_CREAT, 0, 0);
+	m_pSem = sem_open ( sName, O_CREAT, 0, 0 );
 	m_sName = sName;
 	m_bInitialized = ( m_pSem!=SEM_FAILED );
 	return m_bInitialized;
@@ -1368,7 +1332,7 @@ bool CSphSemaphore::Done ()
 
 	m_bInitialized = false;
 	int iRes = sem_close ( m_pSem );
-	sem_unlink (m_sName.cstr());
+	sem_unlink ( m_sName.cstr() );
 	return ( iRes==0 );
 }
 
@@ -1390,44 +1354,6 @@ bool CSphSemaphore::Wait ()
 //////////////////////////////////////////////////////////////////////////
 // RWLOCK
 //////////////////////////////////////////////////////////////////////////
-
-CSphRwlock::CSphRwlock ( CSphRwlock&& rhs )
-	: m_bInitialized ( rhs.m_bInitialized )
-{
-#if USE_WINDOWS
-	m_hWriteMutex = rhs.m_hWriteMutex;
-	rhs.m_hWriteMutex = INVALID_HANDLE_VALUE;
-	m_hReadEvent = rhs.m_hReadEvent;
-	rhs.m_hReadEvent = INVALID_HANDLE_VALUE;
-	m_iReaders = rhs.m_iReaders;
-#else
-	m_pLock = rhs.m_pLock;
-	rhs.m_pLock = nullptr;
-#endif
-}
-
-CSphRwlock& CSphRwlock::operator= ( CSphRwlock&& rhs )
-{
-	if ( this!=&rhs )
-	{
-		Done ();
-		m_bInitialized = rhs.m_bInitialized;
-#if USE_WINDOWS
-		m_hWriteMutex = rhs.m_hWriteMutex;
-		rhs.m_hWriteMutex = INVALID_HANDLE_VALUE;
-		m_hReadEvent = rhs.m_hReadEvent;
-		rhs.m_hReadEvent = INVALID_HANDLE_VALUE;
-		m_iReaders = rhs.m_iReaders;
-#else
-		m_pLock = rhs.m_pLock;
-		rhs.m_pLock = nullptr;
-#endif
-	}
-	return *this;
-}
-
-CSphManagedRwlock &CSphManagedRwlock::operator= ( CSphManagedRwlock &&rhs ) = default;
-CSphManagedRwlock::CSphManagedRwlock ( CSphManagedRwlock&& rhs ) = default;
 
 #if USE_WINDOWS
 
@@ -1945,7 +1871,7 @@ public:
 		, m_bShutdown ( false )
 		, m_iStatQueuedJobs ( 0 )
 	{
-		Verify ( m_tWorkSem.Init (sName) );
+		Verify ( m_tWorkSem.Init ( sName ) );
 
 		iThreads = Max ( iThreads, 1 );
 		m_dWorkers.Reset ( iThreads );
@@ -2172,10 +2098,10 @@ public:
 			double fQuantile = m_iCount==1 ? 0.5 : (iSum + (i->second - 1) / 2.0) / (m_iCount - 1);
 			double fThresh = 4.0 * m_iCount * fQuantile * (1 - fQuantile) / COMPRESSION;
 
-			if ( i->second + iWeight <= fThresh )
+			if ( i->second+iWeight<=fThresh )
 			{
 				iN++;
-				if ( ( double (sphRand()) / UINT_MAX ) < 1.0/iN )
+				if ( ( double ( sphRand() ) / UINT_MAX )<1.0/iN )
 					tClosest = i;
 			}
 
@@ -2188,9 +2114,8 @@ public:
 		{
 			double fNewMean = WeightedAvg ( tClosest->first, tClosest->second, fValue, iWeight );
 			int64_t iNewCount = tClosest->second+iWeight;
-			m_dMap.erase(tClosest);
+			m_dMap.erase ( tClosest );
 			m_dMap.insert ( std::pair<double, int64_t> ( fNewMean, iNewCount ) );
-
 		}
 
 		m_iCount += iWeight;
@@ -2209,7 +2134,7 @@ public:
 			return 0.0;
 
 		int64_t iTotalCount = 0;
-		double fPercent = double(iPercent) / 100.0;
+		double fPercent = double ( iPercent ) / 100.0;
 		fPercent *= m_iCount;
 
 		auto iMapFirst = m_dMap.begin();

@@ -377,6 +377,7 @@ static bool				g_bOptNoDetach	= false;
 static bool				g_bOptNoLock	= false;
 static bool				g_bSafeTrace	= false;
 static bool				g_bStripPath	= false;
+static bool				g_bCoreDump		= false;
 
 static volatile bool	g_bDoDelete			= false;	// do we need to delete any indexes?
 
@@ -538,7 +539,6 @@ void QueryStatContainer_c::Add ( uint64_t uFoundRows, uint64_t uQueryTime, uint6
 	tRecord.m_iCount = 1;
 }
 
-
 void QueryStatContainer_c::GetRecord ( int iRecord, QueryStatRecord_t & tRecord ) const
 {
 	tRecord = m_dRecords[iRecord];
@@ -550,6 +550,18 @@ int QueryStatContainer_c::GetNumRecords() const
 	return m_dRecords.GetLength();
 }
 
+QueryStatContainer_c::QueryStatContainer_c() = default;
+
+QueryStatContainer_c::QueryStatContainer_c ( QueryStatContainer_c && tOther ) : m_dRecords { std::move ( tOther.m_dRecords ) }
+{
+}
+
+QueryStatContainer_c & QueryStatContainer_c::operator = ( QueryStatContainer_c && tOther )
+{
+	if ( &tOther!=this )
+		m_dRecords = std::move ( tOther.m_dRecords );
+	return *this;
+}
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -586,6 +598,19 @@ void QueryStatContainerExact_c::GetRecord ( int iRecord, QueryStatRecord_t & tRe
 
 	tRecord.m_uTimestamp = tExact.m_uTimestamp;
 	tRecord.m_iCount = 1;
+}
+
+QueryStatContainerExact_c::QueryStatContainerExact_c() = default;
+
+QueryStatContainerExact_c::QueryStatContainerExact_c ( QueryStatContainerExact_c && tOther ) : m_dRecords { std::move ( tOther.m_dRecords ) }
+{
+}
+
+QueryStatContainerExact_c & QueryStatContainerExact_c::operator = ( QueryStatContainerExact_c && tOther )
+{
+	if ( &tOther!=this )
+		m_dRecords = std::move ( tOther.m_dRecords );
+	return *this;
 }
 #endif
 
@@ -1688,7 +1713,15 @@ LONG WINAPI SphCrashLogger_c::HandleCrash ( EXCEPTION_POINTERS * pExc )
 #endif // !USE_WINDOWS
 {
 	if ( g_iLogFile<0 )
-		CRASH_EXIT;
+	{
+		if ( g_bCoreDump )
+		{
+			CRASH_EXIT_CORE;
+		} else
+		{
+			CRASH_EXIT;
+		}
+	}
 
 	// log [time][pid]
 	sphSeek ( g_iLogFile, 0, SEEK_END );
@@ -1807,7 +1840,13 @@ LONG WINAPI SphCrashLogger_c::HandleCrash ( EXCEPTION_POINTERS * pExc )
 
 	sphSafeInfo ( g_iLogFile, "------- CRASH DUMP END -------" );
 
-	CRASH_EXIT;
+	if ( g_bCoreDump )
+	{
+		CRASH_EXIT_CORE;
+	} else
+	{
+		CRASH_EXIT;
+	}
 }
 
 void SphCrashLogger_c::SetLastQuery ( const CrashQuery_t & tQuery )
@@ -2316,6 +2355,7 @@ int sphPoll ( int iSock, int64_t tmTimeout, bool bWrite=false )
 	CloseOnDestroy dEid ( eid );
 	epoll_event dEvent;
 	dEvent.events = bWrite ? EPOLLOUT : EPOLLIN;
+	dEvent.data.ptr = NULL; // to keep leak checker silent
 	epoll_ctl ( eid, EPOLL_CTL_ADD, iSock, &dEvent );
 	// do poll
 	return ::epoll_wait ( eid, &dEvent, 1, int ( tmTimeout/1000 ) );
@@ -2350,6 +2390,7 @@ bool sphSockEof ( int iSock )
 	CloseOnDestroy dEid ( eid );
 	epoll_event dEvent;
 	dEvent.events = EPOLLPRI | EPOLLIN;
+	dEvent.data.ptr = NULL; // to keep leak checker silent
 	epoll_ctl ( eid, EPOLL_CTL_ADD, iSock, &dEvent );
 	if ( ::epoll_wait ( eid, &dEvent, 1, 0 )<0 )
 		return true;
@@ -5975,7 +6016,7 @@ bool MinimizeAggrResult ( AggrResult_t & tRes, CSphQuery & tQuery, int iLocals, 
 		return false;
 	}
 
-	bool bReturnZeroCount = !tRes.m_sZeroCountName.IsEmpty();
+	bool bReturnZeroCount = ( tRes.m_dZeroCount.GetLength()!=0 );
 
 	// 0 matches via SphinxAPI? no fiddling with schemes is necessary
 	// (and via SphinxQL, we still need to return the right schema)
@@ -6398,14 +6439,13 @@ bool MinimizeAggrResult ( AggrResult_t & tRes, CSphQuery & tQuery, int iLocals, 
 
 /////////////////////////////////////////////////////////////////////////////
 
-class CSphSchemaMT;
-using GuardedSchemaMT = TUnlockGuard<CSphSchemaMT>;
-
+// TODO: DELETE!!!
 class CSphSchemaMT : public CSphSchema
 {
 public:
 	explicit				CSphSchemaMT ( const char * sName="(nameless)" ) : CSphSchema ( sName ), m_pLock ( NULL )
-	{}
+	{
+	}
 
 	void AwareMT()
 	{
@@ -6423,7 +6463,7 @@ public:
 	}
 
 	// get wlocked entry, only if it is not yet touched
-	inline GuardedSchemaMT GetVirgin () ACQUIRE ( )
+	inline CSphSchemaMT * GetVirgin () ACQUIRE ( )
 	{
 		if ( !m_pLock )
 			return this;
@@ -6433,7 +6473,7 @@ public:
 			if ( m_dAttrs.GetLength()!=0 ) // not already a virgin
 			{
 				m_pLock->Unlock();
-				return GuardedSchemaMT(NULL);
+				return nullptr;
 			}
 			return this;
 		} else
@@ -6445,7 +6485,7 @@ public:
 		return nullptr;
 	}
 
-	inline GuardedSchemaMT RLock() ACQUIRE_SHARED ( )
+	inline CSphSchemaMT * RLock() ACQUIRE_SHARED ( )
 	{
 		if ( !m_pLock )
 			return this;
@@ -6463,7 +6503,6 @@ public:
 		if ( m_pLock )
 			m_pLock->Unlock();
 	}
-	inline void AddRef () {};
 
 private:
 	mutable CSphRwlock * m_pLock;
@@ -7459,12 +7498,12 @@ bool SearchHandler_c::RunLocalSearch ( int iLocal, ISphMatchSorter ** ppSorters,
 	{
 		CSphString & sError = ppResults[i]->m_sError;
 		const CSphQuery & tQuery = m_dQueries[i+m_iStart];
-		GuardedSchemaMT tExtraSchemaMT = tQuery.m_bAgent?m_dExtraSchemas[i+m_iStart].GetVirgin():nullptr;
+		CSphSchemaMT * pExtraSchemaMT = tQuery.m_bAgent ? m_dExtraSchemas[i+m_iStart].GetVirgin() : nullptr;
 
 		m_tHook.m_pIndex = pServed->m_pIndex;
 		SphQueueSettings_t tQueueSettings ( tQuery, pServed->m_pIndex->GetMatchSchema(), sError, m_pProfile );
 		tQueueSettings.m_bComputeItems = true;
-		tQueueSettings.m_pExtra = tExtraSchemaMT;
+		tQueueSettings.m_pExtra = pExtraSchemaMT;
 		tQueueSettings.m_pUpdate = m_pUpdates;
 		tQueueSettings.m_pDeletes = m_pDelete;
 		tQueueSettings.m_pHook = &m_tHook;
@@ -7479,6 +7518,9 @@ bool SearchHandler_c::RunLocalSearch ( int iLocal, ISphMatchSorter ** ppSorters,
 		// can't use multi-query for sorter with string attribute at group by or sort
 		if ( ppSorters[i] && *pMulti )
 			*pMulti = ppSorters[i]->CanMulti();
+
+		if ( pExtraSchemaMT )
+			pExtraSchemaMT->Release();
 	}
 	if ( !iValidSorters )
 	{
@@ -8313,17 +8355,19 @@ void SearchHandler_c::RunSubset ( int iStart, int iEnd )
 		// we can reuse the very same sorter
 		if ( bAllEqual )
 		{
-			GuardedSchemaMT tExtraSchemaMT = m_dQueries[iStart].m_bAgent?m_dExtraSchemas[iStart].GetVirgin():NULL;
+			CSphSchemaMT * pExtraSchemaMT = m_dQueries[iStart].m_bAgent ? m_dExtraSchemas[iStart].GetVirgin() : NULL;
 
 			m_tHook.m_pIndex = pFirstIndex->m_pIndex;
 			SphQueueSettings_t tQueueSettings ( m_dQueries[iStart], tFirstSchema, sError, m_pProfile );
 			tQueueSettings.m_bComputeItems = true;
-			tQueueSettings.m_pExtra = tExtraSchemaMT;
+			tQueueSettings.m_pExtra = pExtraSchemaMT;
 			tQueueSettings.m_pHook = &m_tHook;
 
 			pLocalSorter = sphCreateQueue ( tQueueSettings );
 
 			uLocalPFFlags = tQueueSettings.m_uPackedFactorFlags;
+			if ( pExtraSchemaMT )
+				pExtraSchemaMT->Release();
 		}
 
 		ReleaseIndex ( 0 );
@@ -8565,20 +8609,22 @@ void SearchHandler_c::RunSubset ( int iStart, int iEnd )
 
 		if ( tRes.m_iSuccesses>1 || tQuery.m_dItems.GetLength() || pAggrFilter )
 		{
-			auto tExtraSchema = pExtraSchema?pExtraSchema->RLock():nullptr;
+			if ( pExtraSchema )
+				pExtraSchema->RLock();
 			if ( m_bMaster && tRes.m_iSuccesses && tQuery.m_dItems.GetLength() && tQuery.m_sGroupBy.IsEmpty() && tRes.m_dMatches.GetLength()==0 )
 			{
 				ARRAY_FOREACH ( i, tQuery.m_dItems )
 				{
-					if ( tQuery.m_dItems[i].m_sExpr=="count(*)" )
-					{
-						tRes.m_sZeroCountName = tQuery.m_dItems[i].m_sAlias;
-						break;
-					}
+					if ( tQuery.m_dItems[i].m_sExpr=="count(*)" || ( tQuery.m_dItems[i].m_sExpr=="@distinct" ) )
+						tRes.m_dZeroCount.Add ( tQuery.m_dItems[i].m_sAlias );
 				}
 			}
 
-			if ( !MinimizeAggrResult ( tRes, tQuery, m_dLocal.GetLength(), dAgents.GetLength(), pExtraSchema, m_pProfile, m_bSphinxql, pAggrFilter ) )
+			bool bOk = MinimizeAggrResult ( tRes, tQuery, m_dLocal.GetLength(), dAgents.GetLength(), pExtraSchema, m_pProfile, m_bSphinxql, pAggrFilter );
+
+			if ( pExtraSchema )
+				pExtraSchema->Release();
+			if ( !bOk )
 			{
 				tRes.m_iSuccesses = 0;
 				return; // FIXME? really return, not just continue?
@@ -11736,7 +11782,8 @@ void BuildAgentStatus ( VectorLike & dStatus, const CSphString& sAgent )
 	if ( dStatus.MatchAdd ( "status_stored_periods" ) )
 		dStatus.Add().SetSprintf ( "%d", STATS_DASH_TIME );
 
-	CSphVector<GuardedHostDashboard_t> dAgents;
+	g_tDashes.Lock();
+	CSphVector<HostDashboard_t *> dAgents;
 	g_tDashes.GetActiveDashes ( dAgents );
 
 	CSphString sPrefix;
@@ -11745,6 +11792,7 @@ void BuildAgentStatus ( VectorLike & dStatus, const CSphString& sAgent )
 		sPrefix.SetSprintf ( "ag_%d", i );
 		BuildOneAgentStatus ( dStatus, dAgents[i], sPrefix.cstr() );
 	}
+	g_tDashes.Unlock();
 }
 
 
@@ -13750,11 +13798,11 @@ static void CheckPing ( CSphVector<AgentConn_t> & dAgents, int64_t iNow )
 	dAgents.Resize ( 0 );
 	int iCookie = (int)iNow;
 
-	CSphVector<GuardedHostDashboard_t> dDashes;
+	g_tDashes.Lock();
+	CSphVector<HostDashboard_t *> dDashes;
 	g_tDashes.GetActiveDashes ( dDashes );
-	for ( auto& tDash : dDashes )
+	for ( auto& pDash : dDashes )
 	{
-		HostDashboard_t* pDash = tDash.RawPtr ();
 		if ( pDash->m_bNeedPing )
 		{
 			CSphScopedRLock tRguard ( pDash->m_dDataLock );
@@ -13768,6 +13816,7 @@ static void CheckPing ( CSphVector<AgentConn_t> & dAgents, int64_t iNow )
 			}
 		}
 	}
+	g_tDashes.Unlock();
 
 	if ( !dAgents.GetLength() )
 		return;
@@ -14359,15 +14408,17 @@ void sphFormatFactors ( CSphVector<BYTE> & dOut, const unsigned int * pFactors, 
 }
 
 
-static void ReturnZeroCount ( const CSphRsetSchema & tSchema, int iAttrsCount, const CSphString & sName, SqlRowBuffer_c & dRows )
+static void ReturnZeroCount ( const CSphRsetSchema & tSchema, int iAttrsCount, const CSphVector<CSphString> & dCounts, SqlRowBuffer_c & dRows )
 {
 	for ( int i=0; i<iAttrsCount; i++ )
 	{
-		const CSphColumnInfo & tCol = tSchema.GetAttr(i);
+		const CSphColumnInfo & tCol = tSchema.GetAttr ( i );
 
-		if ( tCol.m_sName==sName ) // @count or its alias
+		// @count or its alias or count(distinct attr_name)
+		if ( dCounts.Contains ( tCol.m_sName ) )
+		{
 			dRows.PutNumeric<DWORD> ( "%u", 0 );
-		else
+		} else
 		{
 			// essentially the same as SELECT_DUAL, parse and print constant expressions
 			ESphAttr eAttrType;
@@ -14415,7 +14466,7 @@ void SendMysqlSelectResult ( SqlRowBuffer_c & dRows, const AggrResult_t & tRes, 
 	// bummer! lets protect ourselves against that
 	int iSchemaAttrsCount = 0;
 	int iAttrsCount = 1;
-	bool bReturnZeroCount = !tRes.m_sZeroCountName.IsEmpty();
+	bool bReturnZeroCount = ( tRes.m_dZeroCount.GetLength()!=0 );
 	if ( tRes.m_dMatches.GetLength() || bReturnZeroCount )
 	{
 		iSchemaAttrsCount = SendGetAttrCount ( tRes.m_tSchema );
@@ -14677,7 +14728,7 @@ void SendMysqlSelectResult ( SqlRowBuffer_c & dRows, const AggrResult_t & tRes, 
 	}
 
 	if ( bReturnZeroCount )
-		ReturnZeroCount ( tRes.m_tSchema, iSchemaAttrsCount, tRes.m_sZeroCountName, dRows );
+		ReturnZeroCount ( tRes.m_tSchema, iSchemaAttrsCount, tRes.m_dZeroCount, dRows );
 
 	// eof packet
 	dRows.Eof ( bMoreResultsFollow, iWarns );
@@ -15796,6 +15847,7 @@ void DumpIndexSettings ( CSphStringBuilder & tBuf, CSphIndex * pIndex )
 	const CSphIndexSettings & tSettings = pIndex->GetSettings();
 	DumpKey ( tBuf, "docinfo",				"inline",								tSettings.m_eDocinfo==SPH_DOCINFO_INLINE );
 	DumpKey ( tBuf, "min_prefix_len",		tSettings.m_iMinPrefixLen,				tSettings.m_iMinPrefixLen!=0 );
+	DumpKey ( tBuf, "min_infix_len",		tSettings.m_iMinInfixLen,				tSettings.m_iMinInfixLen!=0 );
 	DumpKey ( tBuf, "max_substring_len",	tSettings.m_iMaxSubstringLen,			tSettings.m_iMaxSubstringLen!=0 );
 	DumpKey ( tBuf, "index_exact_words",	1,										tSettings.m_bIndexExactWords );
 	DumpKey ( tBuf, "html_strip",			1,										tSettings.m_bHtmlStrip );
@@ -15803,6 +15855,19 @@ void DumpIndexSettings ( CSphStringBuilder & tBuf, CSphIndex * pIndex )
 	DumpKey ( tBuf, "html_remove_elements", tSettings.m_sHtmlRemoveElements.cstr(), !tSettings.m_sHtmlRemoveElements.IsEmpty() );
 	DumpKey ( tBuf, "index_zones",			tSettings.m_sZones.cstr(),				!tSettings.m_sZones.IsEmpty() );
 	DumpKey ( tBuf, "index_field_lengths",	1,										tSettings.m_bIndexFieldLens );
+	DumpKey ( tBuf, "index_sp",				1,										tSettings.m_bIndexSP );
+	DumpKey ( tBuf, "phrase_boundary_step",	tSettings.m_iBoundaryStep,				tSettings.m_iBoundaryStep!=0 );
+	DumpKey ( tBuf, "stopword_step",		tSettings.m_iStopwordStep,				tSettings.m_iStopwordStep!=1 );
+	DumpKey ( tBuf, "overshort_step",		tSettings.m_iOvershortStep,				tSettings.m_iOvershortStep!=1 );
+	DumpKey ( tBuf, "bigram_index", sphBigramName ( tSettings.m_eBigramIndex ), tSettings.m_eBigramIndex!=SPH_BIGRAM_NONE );
+	DumpKey ( tBuf, "bigram_freq_words",	tSettings.m_sBigramWords.cstr(),		!tSettings.m_sBigramWords.IsEmpty() );
+	DumpKey ( tBuf, "rlp_context",			tSettings.m_sRLPContext.cstr(),			!tSettings.m_sRLPContext.IsEmpty() );
+	DumpKey ( tBuf, "index_token_filter",	tSettings.m_sIndexTokenFilter.cstr(),	!tSettings.m_sIndexTokenFilter.IsEmpty() );
+	CSphFieldFilterSettings tFieldFilter;
+	pIndex->GetFieldFilterSettings ( tFieldFilter );
+	ARRAY_FOREACH ( i, tFieldFilter.m_dRegexps )
+		DumpKey ( tBuf, "regexp_filter",	tFieldFilter.m_dRegexps[i].cstr(),		!tFieldFilter.m_dRegexps[i].IsEmpty() );
+
 
 	if ( pIndex->GetTokenizer() )
 	{
@@ -15832,6 +15897,7 @@ void DumpIndexSettings ( CSphStringBuilder & tBuf, CSphIndex * pIndex )
 		DumpKey ( tBuf, "stopwords",		tDictSettings.m_sStopwords.cstr (),		!tDictSettings.m_sStopwords.IsEmpty() );
 		DumpKey ( tBuf, "wordforms",		tWordforms.cstr()+1,					tDictSettings.m_dWordforms.GetLength()>0 );
 		DumpKey ( tBuf, "min_stemming_len",	tDictSettings.m_iMinStemmingLen,		tDictSettings.m_iMinStemmingLen>1 );
+		DumpKey ( tBuf, "stopwords_unstemmed", 1,									tDictSettings.m_bStopwordsUnstemmed );
 	}
 }
 
@@ -18277,15 +18343,16 @@ void InitPersistentPool()
 {
 	if ( g_iPersistentPoolSize )
 	{
-		CSphVector<GuardedHostDashboard_t> tHosts;
+		g_tDashes.Lock();
+		CSphVector<HostDashboard_t *> tHosts;
 		g_tDashes.GetActiveDashes (tHosts);
-		for ( auto& tHost : tHosts )
+		for ( auto& pHost : tHosts )
 		{
-			HostDashboard_t* pHost = tHost.RawPtr ();
 			if ( !pHost->m_pPersPool )
 				pHost->m_pPersPool = new PersistentConnectionsPool_t;
 			pHost->m_pPersPool->Init ( g_iPersistentPoolSize );
 		}
+		g_tDashes.Unlock();
 	}
 }
 
@@ -22443,6 +22510,7 @@ int WINAPI ServiceMain ( int argc, char **argv )
 		OPT1 ( "--vtune" )			g_bVtune = true;
 		OPT1 ( "--noqlog" )			bOptDebugQlog = false;
 		OPT1 ( "--force-preread" )	bForcedPreread = true;
+		OPT1 ( "--coredump" )		g_bCoreDump = true;
 
 		// FIXME! add opt=(csv)val handling here
 		OPT1 ( "--replay-flags=accept-desc-timestamp" )		uReplayFlags |= SPH_REPLAY_ACCEPT_DESC_TIMESTAMP;

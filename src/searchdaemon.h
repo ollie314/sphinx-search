@@ -482,6 +482,10 @@ public:
 	virtual void						GetRecord ( int iRecord, QueryStatRecord_t & tRecord ) const override;
 	virtual int							GetNumRecords() const override;
 
+	QueryStatContainer_c();
+	QueryStatContainer_c ( QueryStatContainer_c && tOther );
+	QueryStatContainer_c & operator= ( QueryStatContainer_c && tOther );
+	
 private:
 	CircularBuffer_T<QueryStatRecord_t>	m_dRecords;
 };
@@ -494,6 +498,10 @@ public:
 	virtual void						Add ( uint64_t uFoundRows, uint64_t uQueryTime, uint64_t uTimestamp );
 	virtual void						GetRecord ( int iRecord, QueryStatRecord_t & tRecord ) const;
 	virtual int							GetNumRecords() const;
+
+	QueryStatContainerExact_c();
+	QueryStatContainerExact_c ( QueryStatContainerExact_c && tOther );
+	QueryStatContainerExact_c & operator= ( QueryStatContainerExact_c && tOther );
 
 private:
 	struct QueryStatRecordExact_t
@@ -817,7 +825,7 @@ struct AggrResult_t : CSphQueryResult
 	CSphVector<int>					m_dMatchCounts;		///< aggregated result sets lengths (for schema minimization)
 	CSphVector<const CSphIndex*>	m_dLockedAttrs;		///< indexes which are hold in the memory until sending result
 	CSphTaggedVector				m_dTag2Pools;		///< tag to MVA and strings storage pools mapping
-	CSphString						m_sZeroCountName;
+	CSphVector<CSphString>			m_dZeroCount;
 
 	AggrResult_t () {}
 	virtual ~AggrResult_t () {}
